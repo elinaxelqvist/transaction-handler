@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2025-03-24T19:38:36.451481+01:00",
+  "totalIncome": 154808,
+  "totalExpenses": 153899.73,
+  "netBalance": 908.27,
+  "categorySummaries": [
+    {
+      "categoryName": "Underh\u00E5llning",
+      "totalIncome": 0,
+      "totalExpenses": 21200,
+      "transactionCount": 193
+    },
+    {
+      "categoryName": "\u00D6vrigt",
+      "totalIncome": 141970,
+      "totalExpenses": 129799.54,
+      "transactionCount": 138
+    },
+    {
+      "categoryName": "Mat",
+      "totalIncome": 12838,
+      "totalExpenses": 1617.36,
+      "transactionCount": 4
+    },
+    {
+      "categoryName": "Norrlands",
+      "totalIncome": 0,
+      "totalExpenses": 403,
+      "transactionCount": 3
+    },
+    {
+      "categoryName": "\u00D6G",
+      "totalIncome": 0,
+      "totalExpenses": 879.83,
+      "transactionCount": 2
+    }
+  ]
+}

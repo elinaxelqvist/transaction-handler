@@ -1,0 +1,83 @@
+@model Labb2.Models.AccountSummary
+
+@{
+    ViewData["Title"] = "Transaktionssummering";
+}
+
+<h1>Transaktionssummering</h1>
+
+<div class="mb-3">
+    <a asp-action="DisplayTransactions" class="btn btn-secondary">Tillbaka till transaktioner</a>
+</div>
+
+<div class="mb-4">
+    <h3>Översikt</h3>
+    <table class="table">
+        <tr>
+            <td>Total inkomst:</td>
+            <td class="text-end">@Model.TotalIncome.ToString("C")</td>
+        </tr>
+        <tr>
+            <td>Totala utgifter:</td>
+            <td class="text-end">@Model.TotalExpenses.ToString("C")</td>
+        </tr>
+        <tr>
+            <td>Netto:</td>
+            <td class="text-end">@Model.NetBalance.ToString("C")</td>
+        </tr>
+    </table>
+</div>
+
+<div class="mb-4">
+    <h3>Inkomster per kategori</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Kategori</th>
+                <th class="text-end">Summa</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.Categories.Where(c => c.IsIncome).OrderByDescending(c => c.TotalAmount))
+            {
+                <tr>
+                    <td>@item.Category</td>
+                    <td class="text-end">@item.TotalAmount.ToString("C")</td>
+                </tr>
+            }
+        </tbody>
+        <tfoot>
+            <tr>
+                <td><strong>Totalt</strong></td>
+                <td class="text-end"><strong>@Model.TotalIncome.ToString("C")</strong></td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<div class="mb-4">
+    <h3>Utgifter per kategori</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Kategori</th>
+                <th class="text-end">Summa</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.Categories.Where(c => !c.IsIncome).OrderBy(c => c.TotalAmount))
+            {
+                <tr>
+                    <td>@item.Category</td>
+                    <td class="text-end">@Math.Abs(item.TotalAmount).ToString("C")</td>
+                </tr>
+            }
+        </tbody>
+        <tfoot>
+            <tr>
+                <td><strong>Totalt</strong></td>
+                <td class="text-end"><strong>@Math.Abs(Model.TotalExpenses).ToString("C")</strong></td>
+            </tr>
+        </tfoot>
+    </table>
+</div> 
