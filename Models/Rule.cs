@@ -7,6 +7,5 @@ namespace Labb2.Models
         public int RuleID { get; set; }
         public string Reference { get; set; }
         public string CategoryName { get; set; }
-        public DateTime CreatedAt { get; set; }
     }
 } 

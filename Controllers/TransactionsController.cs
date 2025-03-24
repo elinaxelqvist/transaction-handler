@@ -4,15 +4,29 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using System.Xml.Linq;
 using System.Globalization;
-using System.Linq;
 
 namespace Labb2.Namespace
 {
     public class TransactionsController : Controller
     {
         private static readonly HttpClient client = new HttpClient();
-        public static readonly SqliteConnection sqlite;
+        private static readonly SqliteConnection sqlite;
         private const string ConnectionString = "Data Source=transactions.db";
+
+        private const string TOTAL_QUERY = @"
+            SELECT 
+                SUM(CASE WHEN CAST(Amount as DECIMAL) > 0 THEN Amount ELSE 0 END) as TotalIncome,
+                SUM(CASE WHEN CAST(Amount as DECIMAL) < 0 THEN Amount ELSE 0 END) as TotalExpenses
+            FROM Transactions";
+
+        private const string CATEGORY_QUERY = @"
+            SELECT 
+                Category,
+                COUNT(*) as TransactionCount,
+                SUM(CAST(Amount as DECIMAL)) as TotalAmount
+            FROM Transactions
+            GROUP BY Category
+            ORDER BY ABS(SUM(CAST(Amount as DECIMAL))) DESC";
 
         static TransactionsController()
         {
@@ -22,51 +36,45 @@ namespace Labb2.Namespace
             sqlite = new SqliteConnection(ConnectionString);
         }
 
-        public ActionResult Index()
-        {
-            return View();
-        }
+        public ActionResult Index() => View();
 
         public ActionResult FetchAPI()
         {
-            List<Transaction> listOfTransactions = new List<Transaction>();
-            string jsonResult = string.Empty;
-
             try
             {
                 using (HttpResponseMessage response = client.GetAsync("https://bank.stuxberg.se/api/iban/SE4550000000058398257466/").Result)
                 {
                     if (response.IsSuccessStatusCode)
                     {
-                        jsonResult = response.Content.ReadAsStringAsync().Result;
-
-                        // Se till att vi deserialiserar direkt till en lista
-                        listOfTransactions = JsonSerializer.Deserialize<List<Transaction>>(jsonResult, new JsonSerializerOptions
+                        var jsonResult = response.Content.ReadAsStringAsync().Result;
+                        var listOfTransactions = JsonSerializer.Deserialize<List<Transaction>>(jsonResult, new JsonSerializerOptions
                         {
                             PropertyNameCaseInsensitive = true
                         }) ?? new List<Transaction>();
 
-                        // Spara transaktionerna i databasen
                         SaveTransactionsToDatabase(listOfTransactions);
+                        return View("DisplayTransactions", listOfTransactions);
                     }
                     else
                     {
-                        Console.WriteLine("Fel vid hämtning av API-data: " + response.StatusCode);
+                        return View("Error", new ErrorViewModel 
+                        { 
+                            ErrorMessage = $"API:et svarade med felkod: {response.StatusCode}. Kunde inte hämta transaktioner." 
+                        });
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Fel vid API-anrop: " + ex.Message);
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Kunde inte ansluta till API:et. Kontrollera din internetanslutning eller försök igen senare." 
+                });
             }
-
-            // Visa datan i vyn
-            return View("DisplayTransactions", listOfTransactions);
         }
 
         private void SaveTransactionsToDatabase(List<Transaction> transactions)
         {
-            Console.WriteLine($"\n=== Starting SaveTransactionsToDatabase for {transactions.Count} transactions ===");
             using (var connection = new SqliteConnection(ConnectionString))
             {
                 connection.Open();
@@ -74,11 +82,6 @@ namespace Labb2.Namespace
                 {
                     foreach (var trans in transactions)
                     {
-                        Console.WriteLine($"\nProcessing transaction ID: {trans.TransactionID}");
-                        Console.WriteLine($"Reference: {trans.Reference}");
-                        Console.WriteLine($"Current category: {trans.Category}");
-
-                        // First check if transaction already exists and has a category
                         string checkExistingQuery = @"
                             SELECT Category FROM Transactions 
                             WHERE TransactionID = @TransactionID";
@@ -91,18 +94,13 @@ namespace Labb2.Namespace
                             if (existingCategory != null)
                             {
                                 categoryToUse = existingCategory.ToString();
-                                Console.WriteLine($"Found existing category: {categoryToUse}");
                             }
                             else
                             {
-                                Console.WriteLine("No existing category found, checking rules...");
-                                // If no existing category, check rules
                                 categoryToUse = GetCategoryForReference(trans.Reference);
-                                Console.WriteLine($"Category from rules: {categoryToUse}");
                             }
                         }
 
-                        // Save the transaction with the determined category
                         string insertQuery = @"
                         INSERT INTO Transactions (TransactionID, BookingDate, TransactionDate, Reference, Amount, Balance, Category) 
                         VALUES (@TransactionID, @BookingDate, @TransactionDate, @Reference, @Amount, @Balance, @Category)
@@ -129,10 +127,8 @@ namespace Labb2.Namespace
                             command.Parameters.AddWithValue("@Category", categoryToUse);
 
                             command.ExecuteNonQuery();
-                            Console.WriteLine($"Saved transaction with category: {categoryToUse}");
                         }
 
-                        // Ensure the category exists in Categories table
                         string checkCategoryQuery = @"
                             SELECT COUNT(*) FROM Categories 
                             WHERE CategoryName = @CategoryName";
@@ -144,7 +140,6 @@ namespace Labb2.Namespace
 
                             if (count == 0)
                             {
-                                Console.WriteLine($"Creating new category: {categoryToUse}");
                                 string insertCategoryQuery = @"
                                     INSERT INTO Categories (TransactionID, Reference, CategoryName) 
                                     VALUES (@TransactionID, @Reference, @CategoryName)";
@@ -155,33 +150,23 @@ namespace Labb2.Namespace
                                     command2.Parameters.AddWithValue("@Reference", trans.Reference);
                                     command2.Parameters.AddWithValue("@CategoryName", categoryToUse);
                                     command2.ExecuteNonQuery();
-                                    Console.WriteLine($"Created new category: {categoryToUse}");
                                 }
-                            }
-                            else
-                            {
-                                Console.WriteLine($"Category {categoryToUse} already exists");
                             }
                         }
                     }
                     transaction.Commit();
-                    Console.WriteLine("\n=== Completed SaveTransactionsToDatabase ===");
                 }
             }
         }
 
         public async Task<ActionResult> DisplayTransactions()
         {
-            // Försök hämta transaktioner från databasen först
             List<Transaction> transactions = new List<Transaction>();
             
-            // Använd SQLResult för att hämta data från databasen
             XElement transactionsXml = await GetTransactionsAsXML();
             
-            // Kontrollera om vi fick några transaktioner från databasen
             if (transactionsXml.Elements().Any())
             {
-                // Konvertera XML-data till Transaction-objekt
                 foreach (var element in transactionsXml.Elements())
                 {
                     transactions.Add(new Transaction
@@ -198,7 +183,6 @@ namespace Labb2.Namespace
             }
             else
             {
-                // Om databasen är tom, hämta från API istället
                 return RedirectToAction("FetchAPI");
             }
 
@@ -207,35 +191,32 @@ namespace Labb2.Namespace
 
         private static void EnsureDatabaseCreated()
         {
-            using (var connection = new SqliteConnection("Data Source=transactions.db"))
+            using (var connection = new SqliteConnection(ConnectionString))
             {
                 connection.Open();
 
-                // Skapa Transactions-tabellen
-                string createTableCommand = @"
+                string createTransactionsTableCommand = @"
                     CREATE TABLE IF NOT EXISTS Transactions (
                         TransactionID INTEGER PRIMARY KEY,
-                        BookingDate TEXT,
-                        TransactionDate TEXT,
+                        BookingDate TEXT NOT NULL,
+                        TransactionDate TEXT NOT NULL,
                         Reference TEXT,
-                        Amount TEXT,
-                        Balance TEXT,
+                        Amount REAL NOT NULL,
+                        Balance REAL NOT NULL,
                         Category TEXT
                     )";
 
-                using (var command = new SqliteCommand(createTableCommand, connection))
+                using (var command = new SqliteCommand(createTransactionsTableCommand, connection))
                 {
                     command.ExecuteNonQuery();
                 }
 
-                // Skapa Categories-tabellen
                 string createCategoriesTableCommand = @"
                     CREATE TABLE IF NOT EXISTS Categories (
-                        CategoryID INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ID INTEGER PRIMARY KEY AUTOINCREMENT,
                         TransactionID INTEGER,
                         Reference TEXT,
-                        CategoryName TEXT NOT NULL,
-                        FOREIGN KEY (TransactionID) REFERENCES Transactions(TransactionID)
+                        CategoryName TEXT
                     )";
 
                 using (var command = new SqliteCommand(createCategoriesTableCommand, connection))
@@ -243,41 +224,22 @@ namespace Labb2.Namespace
                     command.ExecuteNonQuery();
                 }
 
-                // Skapa CategoryRules-tabellen
-                string createCategoryRulesTableCommand = @"
+                string createRulesTableCommand = @"
                     CREATE TABLE IF NOT EXISTS CategoryRules (
                         RuleID INTEGER PRIMARY KEY AUTOINCREMENT,
-                        Reference TEXT NOT NULL UNIQUE,
-                        CategoryName TEXT NOT NULL,
-                        CreatedAt TEXT DEFAULT (datetime('now'))
+                        Reference TEXT NOT NULL,
+                        CategoryName TEXT NOT NULL
                     )";
 
-                using (var command = new SqliteCommand(createCategoryRulesTableCommand, connection))
+                using (var command = new SqliteCommand(createRulesTableCommand, connection))
                 {
                     command.ExecuteNonQuery();
-                    Console.WriteLine("CategoryRules table created or already exists");
                 }
 
-                // Verifiera att tabellen finns och har rätt struktur
                 string checkTableQuery = "SELECT name FROM sqlite_master WHERE type='table' AND name='CategoryRules'";
                 using (var command = new SqliteCommand(checkTableQuery, connection))
                 {
                     var result = command.ExecuteScalar();
-                    Console.WriteLine($"CategoryRules table exists: {result != null}");
-                }
-
-                // Lägg till CategoryName-kolumnen om den inte finns
-                try
-                {
-                    string alterTableCommand = "ALTER TABLE Categories ADD COLUMN CategoryName TEXT NOT NULL DEFAULT 'Övrigt'";
-                    using (var command = new SqliteCommand(alterTableCommand, connection))
-                    {
-                        command.ExecuteNonQuery();
-                    }
-                }
-                catch (Exception)
-                {
-                    // Ignorera felet om kolumnen redan finns
                 }
             }
         }
@@ -329,7 +291,6 @@ namespace Labb2.Namespace
             return await SQLResult(query, "Transactions", "Transaction");
         }
 
-        // Hjälpmetod för att hämta alla unika kategorier
         private async Task<List<string>> GetAllCategories()
         {
             string query = "SELECT DISTINCT CategoryName FROM Categories ORDER BY CategoryName";
@@ -343,10 +304,8 @@ namespace Labb2.Namespace
             return categories;
         }
 
-        // GET: Transactions/Edit
         public async Task<IActionResult> Edit()
         {
-            // Hämta alla transaktioner för att visa i listan
             string query = "SELECT * FROM Transactions ORDER BY BookingDate DESC";
             var xml = await SQLResult(query, "Transactions", "Transaction");
             
@@ -372,28 +331,23 @@ namespace Labb2.Namespace
         [HttpPost]
         public async Task<IActionResult> Edit(List<int> selectedTransactions, string category, string newCategory, bool applyToAll)
         {
-            Console.WriteLine("\n=== Starting Edit Action ===");
-            Console.WriteLine($"Selected transactions: {selectedTransactions?.Count ?? 0}");
-            Console.WriteLine($"Category: {category}");
-            Console.WriteLine($"New category: {newCategory}");
-            Console.WriteLine($"Apply to all: {applyToAll}");
-
             if (selectedTransactions == null || selectedTransactions.Count == 0)
             {
-                Console.WriteLine("No transactions selected");
-                TempData["ErrorMessage"] = "Välj minst en transaktion att kategorisera.";
-                return RedirectToAction(nameof(Edit));
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Välj minst en transaktion att kategorisera." 
+                });
             }
 
             if (string.IsNullOrEmpty(category) && string.IsNullOrEmpty(newCategory))
             {
-                Console.WriteLine("No category selected");
-                TempData["ErrorMessage"] = "Välj en befintlig kategori eller skriv in en ny.";
-                return RedirectToAction(nameof(Edit));
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Välj en befintlig kategori eller skriv in en ny." 
+                });
             }
 
             string categoryToUse = !string.IsNullOrEmpty(newCategory) ? newCategory : category;
-            Console.WriteLine($"Category to use: {categoryToUse}");
 
             try
             {
@@ -405,7 +359,6 @@ namespace Labb2.Namespace
                     {
                         try
                         {
-                            // Get the reference from the first selected transaction
                             string getReferenceQuery = "SELECT Reference FROM Transactions WHERE TransactionID = @TransactionID";
                             string reference = null;
                             using (var command = new SqliteCommand(getReferenceQuery, connection, dbTransaction))
@@ -414,8 +367,6 @@ namespace Labb2.Namespace
                                 reference = (string)await command.ExecuteScalarAsync();
                             }
 
-                            Console.WriteLine($"Reference from first transaction: {reference}");
-
                             if (string.IsNullOrEmpty(reference))
                             {
                                 throw new Exception("Kunde inte hitta referens för den valda transaktionen.");
@@ -423,8 +374,6 @@ namespace Labb2.Namespace
 
                             if (applyToAll)
                             {
-                                Console.WriteLine("Creating/updating rule for all transactions with this reference");
-                                // Create or update the rule
                                 string upsertRuleQuery = @"
                                     INSERT OR REPLACE INTO CategoryRules (Reference, CategoryName) 
                                     VALUES (@Reference, @CategoryName)";
@@ -434,23 +383,18 @@ namespace Labb2.Namespace
                                     command.Parameters.AddWithValue("@Reference", reference);
                                     command.Parameters.AddWithValue("@CategoryName", categoryToUse);
                                     await command.ExecuteNonQueryAsync();
-                                    Console.WriteLine($"Created/updated rule: {reference} -> {categoryToUse}");
                                 }
 
-                                // Update ALL transactions with this reference
                                 string updateAllQuery = "UPDATE Transactions SET Category = @Category WHERE Reference = @Reference";
                                 using (var command = new SqliteCommand(updateAllQuery, connection, dbTransaction))
                                 {
                                     command.Parameters.AddWithValue("@Category", categoryToUse);
                                     command.Parameters.AddWithValue("@Reference", reference);
-                                    var rowsAffected = await command.ExecuteNonQueryAsync();
-                                    Console.WriteLine($"Updated {rowsAffected} transactions with reference {reference}");
+                                    await command.ExecuteNonQueryAsync();
                                 }
                             }
                             else
                             {
-                                Console.WriteLine("Updating only selected transactions");
-                                // Update only the selected transactions
                                 foreach (var transactionId in selectedTransactions)
                                 {
                                     string updateSelectedTransactionsQuery = "UPDATE Transactions SET Category = @Category WHERE TransactionID = @TransactionID";
@@ -459,12 +403,10 @@ namespace Labb2.Namespace
                                         command.Parameters.AddWithValue("@Category", categoryToUse);
                                         command.Parameters.AddWithValue("@TransactionID", transactionId);
                                         await command.ExecuteNonQueryAsync();
-                                        Console.WriteLine($"Updated transaction {transactionId} to category {categoryToUse}");
                                     }
                                 }
                             }
 
-                            // Ensure the category exists in Categories table
                             string checkCategoryQuery = "SELECT COUNT(*) FROM Categories WHERE CategoryName = @CategoryName";
                             using (var command = new SqliteCommand(checkCategoryQuery, connection, dbTransaction))
                             {
@@ -473,195 +415,238 @@ namespace Labb2.Namespace
 
                                 if (count == 0)
                                 {
-                                    Console.WriteLine($"Creating new category: {categoryToUse}");
                                     string insertCategoryQuery = "INSERT INTO Categories (CategoryName) VALUES (@CategoryName)";
                                     using (var command2 = new SqliteCommand(insertCategoryQuery, connection, dbTransaction))
                                     {
                                         command2.Parameters.AddWithValue("@CategoryName", categoryToUse);
                                         await command2.ExecuteNonQueryAsync();
-                                        Console.WriteLine($"Created new category: {categoryToUse}");
                                     }
-                                }
-                                else
-                                {
-                                    Console.WriteLine($"Category {categoryToUse} already exists");
                                 }
                             }
 
                             dbTransaction.Commit();
-                            Console.WriteLine("Transaction committed successfully");
-                            TempData["SuccessMessage"] = "Kategorierna har uppdaterats.";
+                            return RedirectToAction(nameof(DisplayTransactions));
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Error during transaction: {ex.Message}");
                             dbTransaction.Rollback();
-                            TempData["ErrorMessage"] = $"Ett fel uppstod: {ex.Message}";
+                            return View("Error", new ErrorViewModel 
+                            { 
+                                ErrorMessage = "Ett fel uppstod vid uppdatering av kategorier." 
+                            });
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error in Edit action: {ex.Message}");
-                TempData["ErrorMessage"] = $"Ett fel uppstod: {ex.Message}";
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Ett fel uppstod vid anslutning till databasen." 
+                });
             }
-
-            Console.WriteLine("=== Completed Edit Action ===\n");
-            return RedirectToAction(nameof(DisplayTransactions));
         }
 
         private async Task<List<Transaction>> GetAllTransactions()
         {
-            string query = "SELECT * FROM Transactions ORDER BY BookingDate DESC";
-            var xml = await SQLResult(query, "Transactions", "Transaction");
-            
-            var transactions = new List<Transaction>();
-            foreach (var element in xml.Elements())
-            {
-                var transaction = new Transaction
+            var xml = await SQLResult("SELECT * FROM Transactions ORDER BY BookingDate DESC", "Transactions", "Transaction");
+            return xml.Elements().Select(element => new Transaction
                 {
                     TransactionID = int.Parse(element.Element("TransactionID").Value),
                     Reference = element.Element("Reference").Value,
                     Amount = decimal.Parse(element.Element("Amount").Value, CultureInfo.InvariantCulture),
                     Balance = decimal.Parse(element.Element("Balance").Value, CultureInfo.InvariantCulture),
                     Category = element.Element("Category")?.Value
-                };
-                transactions.Add(transaction);
-            }
-            return transactions;
+            }).ToList();
         }
 
         private List<Rule> GetRules()
         {
-            Console.WriteLine("\n=== Fetching Rules ===");
-            List<Rule> rules = new List<Rule>();
+            var rules = new List<Rule>();
             try
             {
-                using (var connection = new SqliteConnection(ConnectionString))
+                using var connection = new SqliteConnection(ConnectionString);
+                connection.Open();
+                using var command = new SqliteCommand("SELECT RuleID, Reference, CategoryName FROM CategoryRules", connection);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
                 {
-                    connection.Open();
-
-                    string query = "SELECT RuleID, Reference, CategoryName, CreatedAt FROM CategoryRules";
-                    using (var command = new SqliteCommand(query, connection))
+                    rules.Add(new Rule
                     {
-                        using (var reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                var rule = new Rule
-                                {
-                                    RuleID = Convert.ToInt32(reader["RuleID"]),
-                                    Reference = reader["Reference"].ToString(),
-                                    CategoryName = reader["CategoryName"].ToString(),
-                                    CreatedAt = DateTime.Parse(reader["CreatedAt"].ToString())
-                                };
-                                rules.Add(rule);
-                                Console.WriteLine($"Found rule: {rule.Reference} -> {rule.CategoryName}");
-                            }
-                        }
-                    }
+                        RuleID = int.Parse(reader["RuleID"].ToString()),
+                        Reference = reader["Reference"].ToString(),
+                        CategoryName = reader["CategoryName"].ToString()
+                    });
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error fetching rules: {ex.Message}");
-                TempData["ErrorMessage"] = $"Error fetching rules: {ex.Message}";
+                Console.WriteLine($"Ett fel uppstod vid hämtning av regler.");
             }
-
-            Console.WriteLine($"Total rules found: {rules.Count}");
-            Console.WriteLine("=== Completed Fetching Rules ===\n");
             return rules;
         }
 
         private string GetCategoryForReference(string reference)
         {
-            Console.WriteLine($"\n=== Getting Category for Reference: {reference} ===");
             var rules = GetRules();
-            var matchingRule = rules.FirstOrDefault(r => r.Reference == reference);
-            
-            if (matchingRule != null)
-            {
-                Console.WriteLine($"Found matching rule: {matchingRule.Reference} -> {matchingRule.CategoryName}");
-            }
-            else
-            {
-                Console.WriteLine("No matching rule found, using default category: Övrigt");
-            }
-            
-            Console.WriteLine("=== Completed Getting Category ===\n");
-            return matchingRule?.CategoryName ?? "Övrigt";
+            return rules.FirstOrDefault(r => r.Reference == reference)?.CategoryName ?? "Övrigt";
         }
 
         public IActionResult Summary()
         {
-            using (var connection = new SqliteConnection(ConnectionString))
+            try 
             {
+                using var connection = new SqliteConnection(ConnectionString);
                 connection.Open();
                 var accountSummary = new AccountSummary();
 
-                // First get total income and expenses
-                string totalQuery = @"
-                    SELECT 
-                        SUM(CASE WHEN CAST(Amount as DECIMAL) > 0 THEN Amount ELSE 0 END) as TotalIncome,
-                        SUM(CASE WHEN CAST(Amount as DECIMAL) < 0 THEN Amount ELSE 0 END) as TotalExpenses
-                    FROM Transactions";
-
-                using (var command = new SqliteCommand(totalQuery, connection))
+                using (var command = new SqliteCommand(@"SELECT 
+                    SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END) as TotalIncome,
+                    SUM(CASE WHEN Amount < 0 THEN ABS(Amount) ELSE 0 END) as TotalExpenses
+                    FROM Transactions", connection))
+                using (var reader = command.ExecuteReader())
                 {
-                    using (var reader = command.ExecuteReader())
+                    if (reader.Read())
                     {
-                        if (reader.Read())
-                        {
-                            accountSummary.TotalIncome = Convert.ToDecimal(reader["TotalIncome"]);
-                            accountSummary.TotalExpenses = Convert.ToDecimal(reader["TotalExpenses"]);
-                        }
+                        accountSummary.TotalIncome = Convert.ToDecimal(reader["TotalIncome"]);
+                        accountSummary.TotalExpenses = Math.Abs(Convert.ToDecimal(reader["TotalExpenses"]));
                     }
                 }
 
-                // Then get category breakdown
-                string categoryQuery = @"
-                    SELECT 
-                        Category,
-                        COUNT(*) as TransactionCount,
-                        SUM(CAST(Amount as DECIMAL)) as TotalAmount
-                    FROM Transactions
+                using (var command = new SqliteCommand(@"SELECT 
+                    COALESCE(Category, 'Övrigt') as Category,
+                    COUNT(*) as TransactionCount,
+                    SUM(Amount) as TotalAmount
+                    FROM Transactions 
+                    WHERE Amount > 0
                     GROUP BY Category
-                    ORDER BY ABS(SUM(CAST(Amount as DECIMAL))) DESC";
-
-                using (var command = new SqliteCommand(categoryQuery, connection))
+                    ORDER BY TotalAmount DESC", connection))
+                using (var reader = command.ExecuteReader())
                 {
-                    using (var reader = command.ExecuteReader())
+                    while (reader.Read())
                     {
-                        while (reader.Read())
+                        var summary = new TransactionSummary
                         {
-                            var summary = new TransactionSummary
-                            {
-                                Category = reader["Category"].ToString() ?? "Okategoriserad",
-                                TransactionCount = Convert.ToInt32(reader["TransactionCount"]),
-                                TotalAmount = Convert.ToDecimal(reader["TotalAmount"])
-                            };
+                            Category = reader["Category"]?.ToString() ?? "Övrigt",
+                            TransactionCount = Convert.ToInt32(reader["TransactionCount"]),
+                            TotalAmount = Convert.ToDecimal(reader["TotalAmount"])
+                        };
+                        accountSummary.Categories.Add(summary);
+                    }
+                }
 
-                            // Calculate percentage of total income or expenses
-                            if (summary.IsIncome)
-                            {
-                                summary.Percentage = accountSummary.TotalIncome != 0 
-                                    ? Math.Abs(summary.TotalAmount / accountSummary.TotalIncome * 100)
-                                    : 0;
-                            }
-                            else
-                            {
-                                summary.Percentage = accountSummary.TotalExpenses != 0 
-                                    ? Math.Abs(summary.TotalAmount / accountSummary.TotalExpenses * 100)
-                                    : 0;
-                            }
-
-                            accountSummary.Categories.Add(summary);
-                        }
+                using (var command = new SqliteCommand(@"SELECT 
+                    COALESCE(Category, 'Övrigt') as Category,
+                    COUNT(*) as TransactionCount,
+                    SUM(Amount) as TotalAmount
+                    FROM Transactions 
+                    WHERE Amount < 0
+                    GROUP BY Category
+                    ORDER BY ABS(TotalAmount) DESC", connection))
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var summary = new TransactionSummary
+                        {
+                            Category = reader["Category"]?.ToString() ?? "Övrigt",
+                            TransactionCount = Convert.ToInt32(reader["TransactionCount"]),
+                            TotalAmount = Convert.ToDecimal(reader["TotalAmount"])
+                        };
+                        accountSummary.Categories.Add(summary);
                     }
                 }
 
                 return View(accountSummary);
+            }
+            catch (Exception)
+            {
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Ett fel uppstod vid generering av summeringen." 
+                });
+            }
+        }
+
+        public IActionResult DownloadSummary()
+        {
+            try
+            {
+                var report = new SummaryReport { GeneratedAt = DateTime.Now };
+                using var connection = new SqliteConnection(ConnectionString);
+                connection.Open();
+
+                using (var command = new SqliteCommand(@"SELECT 
+                    SUM(CASE WHEN Amount > 0 THEN Amount ELSE 0 END) as TotalIncome,
+                    SUM(CASE WHEN Amount < 0 THEN ABS(Amount) ELSE 0 END) as TotalExpenses
+                    FROM Transactions", connection))
+                using (var reader = command.ExecuteReader())
+                {
+                    if (reader.Read())
+                    {
+                        report.TotalIncome = Convert.ToDecimal(reader["TotalIncome"]);
+                        report.TotalExpenses = Math.Abs(Convert.ToDecimal(reader["TotalExpenses"]));
+                    }
+                }
+
+                using (var command = new SqliteCommand(@"SELECT 
+                    COALESCE(Category, 'Övrigt') as Category,
+                    COUNT(*) as TransactionCount,
+                    SUM(Amount) as TotalAmount
+                    FROM Transactions 
+                    WHERE Amount > 0
+                    GROUP BY Category
+                    ORDER BY TotalAmount DESC", connection))
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var summary = new CategorySummary
+                        {
+                            Category = reader["Category"]?.ToString() ?? "Övrigt",
+                            TransactionCount = Convert.ToInt32(reader["TransactionCount"]),
+                            TotalAmount = Convert.ToDecimal(reader["TotalAmount"])
+                        };
+                        report.IncomeCategories.Add(summary);
+                    }
+                }
+
+                using (var command = new SqliteCommand(@"SELECT 
+                    COALESCE(Category, 'Övrigt') as Category,
+                    COUNT(*) as TransactionCount,
+                    SUM(Amount) as TotalAmount
+                    FROM Transactions 
+                    WHERE Amount < 0
+                    GROUP BY Category
+                    ORDER BY ABS(TotalAmount) DESC", connection))
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var summary = new CategorySummary
+                        {
+                            Category = reader["Category"]?.ToString() ?? "Övrigt",
+                            TransactionCount = Convert.ToInt32(reader["TransactionCount"]),
+                            TotalAmount = Math.Abs(Convert.ToDecimal(reader["TotalAmount"]))
+                        };
+                        report.ExpenseCategories.Add(summary);
+                    }
+                }
+
+                var jsonString = JsonSerializer.Serialize(report, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(jsonString);
+                return File(bytes, "application/json", "transaction_summary.json");
+            }
+            catch (Exception)
+            {
+                return View("Error", new ErrorViewModel 
+                { 
+                    ErrorMessage = "Ett fel uppstod vid generering av rapporten." 
+                });
             }
         }
     }

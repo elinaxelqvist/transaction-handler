@@ -9,14 +9,13 @@ namespace Labb2.Models
         public int TransactionCount { get; set; }
         public decimal TotalAmount { get; set; }
         public bool IsIncome => TotalAmount > 0;
-        public decimal Percentage { get; set; }
     }
 
     public class AccountSummary
     {
         public decimal TotalIncome { get; set; }
         public decimal TotalExpenses { get; set; }
-        public decimal NetBalance => TotalIncome + TotalExpenses;
+        public decimal NetBalance => TotalIncome - TotalExpenses;
         public List<TransactionSummary> Categories { get; set; } = new List<TransactionSummary>();
     }
 } 
